@@ -13,6 +13,28 @@ function getStorageStateIfExists() {
   return fs.existsSync(SESSION_FILE) ? SESSION_FILE : undefined;
 }
 
+function getCsvFilesSorted() {
+  if (!fs.existsSync(DOWNLOAD_DIR)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(DOWNLOAD_DIR)
+    .filter((file) => file.toLowerCase().endsWith('.csv'))
+    .map((file) => {
+      const fullPath = path.join(DOWNLOAD_DIR, file);
+      const stats = fs.statSync(fullPath);
+
+      return {
+        name: file,
+        fullPath,
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
+      };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
 app.get('/health', (req, res) => {
   res.send('ok');
 });
@@ -33,7 +55,11 @@ app.post('/session', async (req, res) => {
     }
 
     fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2), 'utf8');
+    fs.writeFileSync(
+      SESSION_FILE,
+      JSON.stringify(storageState, null, 2),
+      'utf8'
+    );
 
     res.json({ ok: true, saved: true });
   } catch (error) {
@@ -96,6 +122,43 @@ app.post('/run', async (req, res) => {
     if (browser) await browser.close().catch(() => {});
 
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/files', (req, res) => {
+  try {
+    const files = getCsvFilesSorted().map((file) => ({
+      name: file.name,
+      size: file.size,
+      modifiedAt: new Date(file.mtimeMs).toISOString(),
+      path: path.join(DOWNLOAD_DIR, file.name),
+    }));
+
+    res.json({
+      ok: true,
+      total: files.length,
+      files,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/download-last', (req, res) => {
+  try {
+    const files = getCsvFilesSorted();
+
+    if (files.length === 0) {
+      return res.status(404).json({ error: 'NO_FILES_FOUND' });
+    }
+
+    const lastFile = files[0];
+
+    return res.download(lastFile.fullPath, lastFile.name);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'DOWNLOAD_FAILED' });
   }
 });
 
