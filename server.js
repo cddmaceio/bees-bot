@@ -11,6 +11,11 @@ app.use(express.json({ limit: '10mb' }));
 const SESSION_FILE = process.env.SESSION_FILE || '/data/bees-profile/storageState.json';
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '/data/downloads';
 
+// Estratégia de retenção
+// CSV: 1 por dia (já acontece via nome relatorio-YYYY-MM-DD.csv)
+// PNG: manter apenas a screenshot mais recente
+const KEEP_ONLY_LATEST_SCREENSHOT = true;
+
 const URL_CONTROL_TOWER = 'https://deliver-portal.bees-platform.com/control-tower';
 const URL_ROUTES = 'https://deliver-portal.bees-platform.com/routes';
 
@@ -27,6 +32,16 @@ function sleep(ms) {
 
 function getStorageStateIfExists() {
   return fs.existsSync(SESSION_FILE) ? SESSION_FILE : undefined;
+}
+
+function sanitizeFileNamePart(input) {
+  return String(input || 'file')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9-_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
 }
 
 function getCsvFilesSorted() {
@@ -76,6 +91,7 @@ function deleteManagedFiles() {
   let deleted = 0;
   const deletedFiles = [];
   const failedFiles = [];
+
   for (const file of files) {
     try {
       fs.unlinkSync(file.fullPath);
@@ -85,6 +101,7 @@ function deleteManagedFiles() {
       failedFiles.push({ name: file.name, error: error.message });
     }
   }
+
   return { totalFound: files.length, deleted, deletedFiles, failedFiles };
 }
 
@@ -122,12 +139,36 @@ function normalizeFileDate(input) {
   throw new Error('INVALID_DATE_FORMAT | use yyyy-mm-dd ou dd/mm/yyyy');
 }
 
+function cleanupOldScreenshots(keepFullPath) {
+  if (!KEEP_ONLY_LATEST_SCREENSHOT) return;
+
+  const files = getPngFilesSorted();
+  for (const file of files) {
+    if (file.fullPath === keepFullPath) continue;
+    try {
+      fs.unlinkSync(file.fullPath);
+      console.log('Screenshot antiga removida:', file.fullPath);
+    } catch (error) {
+      console.error('Erro ao remover screenshot antiga:', file.fullPath, error.message);
+    }
+  }
+}
+
 async function saveDebugScreenshot(page, prefix = 'debug') {
   try {
     ensureDir(DOWNLOAD_DIR);
-    const filePath = path.join(DOWNLOAD_DIR, `${prefix}-${Date.now()}.png`);
-    await page.screenshot({ path: filePath, fullPage: true });
+
+    const safePrefix = sanitizeFileNamePart(prefix);
+    const filePath = path.join(DOWNLOAD_DIR, `${safePrefix}-${Date.now()}.png`);
+
+    await page.screenshot({
+      path: filePath,
+      fullPage: true,
+    });
+
     console.log('Screenshot salva em:', filePath);
+
+    cleanupOldScreenshots(filePath);
     return filePath;
   } catch (error) {
     console.error('Erro ao salvar screenshot:', error.message);
@@ -153,9 +194,11 @@ async function detectLoginPage(page) {
     if (url.includes('b2clogin.com')) return true;
     if (url.includes('/login')) return true;
     if (url.includes('/signin')) return true;
+
     const emailInputCount = await page.locator('input[type="email"]').count().catch(() => 0);
     const passwordInputCount = await page.locator('input[type="password"]').count().catch(() => 0);
     const enterCount = await page.locator('text=Entrar').count().catch(() => 0);
+
     return emailInputCount > 0 || passwordInputCount > 0 || enterCount > 0;
   } catch (error) {
     console.error('Erro ao detectar tela de login:', error.message);
@@ -176,6 +219,7 @@ async function waitForIndicatorsPage(page) {
   const title = page.locator('text=Dados para Indicadores');
   const helper = page.locator('text=Selecione uma data para baixar o arquivo CSV.');
   const button = page.locator('button:has-text("DOWNLOAD")');
+
   try {
     await Promise.race([
       title.waitFor({ state: 'visible', timeout: 20000 }),
@@ -193,11 +237,13 @@ async function findIndicatorsSection(page) {
     page.locator('div, section').filter({ has: page.locator('text=Dados para Indicadores') }).first(),
     page.locator('div, section').filter({ has: page.locator('text=Selecione uma data para baixar o arquivo CSV.') }).first(),
   ];
+
   for (const locator of candidates) {
     try {
       if (await locator.count()) return locator;
     } catch (_) {}
   }
+
   return page.locator('body');
 }
 
@@ -208,25 +254,32 @@ async function setDateField(section, dateBr) {
     'input[placeholder*="data" i]',
     'input',
   ];
+
   for (const selector of selectors) {
     try {
       const input = section.locator(selector).first();
       if (!(await input.count())) continue;
       if (!(await input.isVisible().catch(() => false))) continue;
+
       await input.scrollIntoViewIfNeeded().catch(() => {});
       await input.click({ timeout: 3000 }).catch(() => {});
+
       const filled = await input.fill(dateBr, { timeout: 3000 }).then(() => true).catch(() => false);
+
       if (!filled) {
         await input.press('Control+A').catch(() => {});
         await input.press('Meta+A').catch(() => {});
         await input.type(dateBr, { delay: 80 }).catch(() => {});
       }
+
       await input.press('Tab').catch(() => {});
       await sleep(700);
+
       console.log(`Data preenchida com seletor ${selector}: ${dateBr}`);
       return selector;
     } catch (_) {}
   }
+
   return null;
 }
 
@@ -241,13 +294,17 @@ async function clickDownload(page, section, fileDate) {
     page.locator('a:has-text("DOWNLOAD")').first(),
     page.locator('a:has-text("Download")').first(),
   ];
+
   for (const btn of buttonCandidates) {
     try {
       if (!(await btn.count())) continue;
       if (!(await btn.isVisible().catch(() => false))) continue;
+
       await btn.scrollIntoViewIfNeeded().catch(() => {});
       await sleep(1000);
+
       const downloadPromise = page.waitForEvent('download', { timeout: 60000 });
+
       try {
         await btn.click({ timeout: 8000 });
       } catch {
@@ -255,14 +312,22 @@ async function clickDownload(page, section, fileDate) {
         if (!box) throw new Error('DOWNLOAD_BUTTON_NOT_CLICKABLE');
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
       }
+
       const download = await downloadPromise;
       const filePath = path.join(DOWNLOAD_DIR, `relatorio-${fileDate}.csv`);
+
+      // Sobrescreve o CSV do mesmo dia
       await download.saveAs(filePath);
-      return { filePath, suggestedFilename: download.suggestedFilename() };
+
+      return {
+        filePath,
+        suggestedFilename: download.suggestedFilename(),
+      };
     } catch (error) {
       console.log('Falhou tentativa de clique no download:', error.message);
     }
   }
+
   return null;
 }
 
@@ -275,17 +340,23 @@ async function findFreePort() {
   for (let port = 9300; port <= 9399; port++) {
     const free = await new Promise((resolve) => {
       const srv = net.createServer();
-      srv.listen(port, () => { srv.close(); resolve(true); });
+      srv.listen(port, () => {
+        srv.close();
+        resolve(true);
+      });
       srv.on('error', () => resolve(false));
     });
+
     if (free) return port;
   }
+
   throw new Error('Nenhuma porta livre disponível no range 9300-9399');
 }
 
 // Limpeza automática de sessões MFA antigas (> 30 min)
 setInterval(() => {
   const now = Date.now();
+
   for (const [id, session] of activeMfaSessions.entries()) {
     if (now - session.startedAt > 30 * 60 * 1000) {
       session.browser.close().catch(() => {});
@@ -425,7 +496,6 @@ function renderHomePage() {
           </div>
         </div>
 
-        <!-- Card MFA -->
         <div class="mfa-card">
           <h2>🔐 Sessão MFA</h2>
 
@@ -617,6 +687,7 @@ app.get('/health', (_req, res) => {
     sessionFileExists: fs.existsSync(SESSION_FILE),
     sessionFile: SESSION_FILE,
     now: new Date().toISOString(),
+    keepOnlyLatestScreenshot: KEEP_ONLY_LATEST_SCREENSHOT,
   });
 });
 
@@ -633,8 +704,10 @@ app.post('/session', async (req, res) => {
     if (!storageState || !storageState.cookies) {
       return res.status(400).json({ error: 'INVALID_STORAGE_STATE' });
     }
+
     ensureDir(path.dirname(SESSION_FILE));
     fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2), 'utf8');
+
     return res.json({ ok: true, saved: true, sessionFile: SESSION_FILE });
   } catch (error) {
     console.error(error);
@@ -645,8 +718,10 @@ app.post('/session', async (req, res) => {
 app.post('/run', async (req, res) => {
   let browser;
   let context;
+
   try {
     ensureDir(DOWNLOAD_DIR);
+
     const requestedDate = req.body?.date || null;
     const dateBr = formatDateBR(requestedDate);
     const fileDate = normalizeFileDate(requestedDate);
@@ -669,6 +744,7 @@ app.post('/run', async (req, res) => {
       const loginShot = await saveDebugScreenshot(page, 'auth-required');
       await context.close().catch(() => {});
       await browser.close().catch(() => {});
+
       return res.status(401).json({
         success: false,
         error: 'AUTH_REQUIRED',
@@ -681,10 +757,12 @@ app.post('/run', async (req, res) => {
 
     if (!onIndicatorsPage) {
       await gotoWithWait(page, URL_ROUTES, 'Routes');
+
       if (await detectLoginPage(page)) {
         const loginShot = await saveDebugScreenshot(page, 'auth-required-after-routes');
         await context.close().catch(() => {});
         await browser.close().catch(() => {});
+
         return res.status(401).json({
           success: false,
           error: 'AUTH_REQUIRED',
@@ -692,6 +770,7 @@ app.post('/run', async (req, res) => {
           screenshot: loginShot,
         });
       }
+
       await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower Final');
       onIndicatorsPage = await waitForIndicatorsPage(page);
     }
@@ -718,6 +797,7 @@ app.post('/run', async (req, res) => {
     }
 
     const successShot = await saveDebugScreenshot(page, 'success');
+
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
 
@@ -729,12 +809,21 @@ app.post('/run', async (req, res) => {
       screenshot: successShot,
       dateUsed: dateBr,
       dateSelector: usedDateSelector,
+      retention: {
+        csv: '1 arquivo por dia',
+        screenshot: KEEP_ONLY_LATEST_SCREENSHOT ? 'apenas a mais recente' : 'sem limpeza automática',
+      },
     });
   } catch (error) {
     console.error(error);
+
     if (context) await context.close().catch(() => {});
     if (browser) await browser.close().catch(() => {});
-    return res.status(500).json({ success: false, error: error.message || String(error) });
+
+    return res.status(500).json({
+      success: false,
+      error: error.message || String(error),
+    });
   }
 });
 
@@ -757,6 +846,7 @@ app.get('/files', (_req, res) => {
       modifiedAt: new Date(file.mtimeMs).toISOString(),
       path: file.fullPath,
     }));
+
     return res.json({ ok: true, total: files.length, files });
   } catch (error) {
     console.error(error);
@@ -767,16 +857,25 @@ app.get('/files', (_req, res) => {
 app.get('/files-all', (_req, res) => {
   try {
     const csvFiles = getCsvFilesSorted().map((f) => ({
-      type: 'csv', name: f.name, size: f.size,
-      modifiedAt: new Date(f.mtimeMs).toISOString(), path: f.fullPath,
+      type: 'csv',
+      name: f.name,
+      size: f.size,
+      modifiedAt: new Date(f.mtimeMs).toISOString(),
+      path: f.fullPath,
     }));
+
     const pngFiles = getPngFilesSorted().map((f) => ({
-      type: 'png', name: f.name, size: f.size,
-      modifiedAt: new Date(f.mtimeMs).toISOString(), path: f.fullPath,
+      type: 'png',
+      name: f.name,
+      size: f.size,
+      modifiedAt: new Date(f.mtimeMs).toISOString(),
+      path: f.fullPath,
     }));
+
     const files = [...csvFiles, ...pngFiles].sort(
       (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
     );
+
     return res.json({ ok: true, total: files.length, files });
   } catch (error) {
     console.error(error);
@@ -799,8 +898,10 @@ app.get('/view-last-csv', (_req, res) => {
   try {
     const files = getCsvFilesSorted();
     if (files.length === 0) return res.status(404).send('Nenhum CSV encontrado');
+
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `inline; filename="${files[0].name}"`);
+
     return fs.createReadStream(files[0].fullPath).pipe(res);
   } catch (error) {
     console.error(error);
@@ -823,8 +924,10 @@ app.get('/view-debug-last', (_req, res) => {
   try {
     const files = getPngFilesSorted();
     if (files.length === 0) return res.status(404).send('Nenhuma screenshot encontrada');
+
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Content-Disposition', `inline; filename="${files[0].name}"`);
+
     return fs.createReadStream(files[0].fullPath).pipe(res);
   } catch (error) {
     console.error(error);
@@ -833,9 +936,8 @@ app.get('/view-debug-last', (_req, res) => {
 });
 
 // ── Rotas MFA ────────────────────────────────────────────────
-app.post('/mfa-start', async (req, res) => {
+app.post('/mfa-start', async (_req, res) => {
   try {
-    // Reutiliza sessão ativa se já existir
     if (activeMfaSessions.size >= 1) {
       const [existingId] = activeMfaSessions.keys();
       return res.json({
@@ -866,15 +968,25 @@ app.post('/mfa-start', async (req, res) => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
 
-    // Navega pro portal — vai acionar o redirect do Azure AD MFA
     await page.goto(URL_CONTROL_TOWER, {
       waitUntil: 'domcontentloaded',
       timeout: 60000,
     }).catch(() => {});
 
-    activeMfaSessions.set(sessionId, { browser, context, page, port, startedAt: Date.now() });
+    activeMfaSessions.set(sessionId, {
+      browser,
+      context,
+      page,
+      port,
+      startedAt: Date.now(),
+    });
 
-    return res.json({ ok: true, sessionId, viewUrl: `/mfa-view/${sessionId}`, cdpPort: port });
+    return res.json({
+      ok: true,
+      sessionId,
+      viewUrl: `/mfa-view/${sessionId}`,
+      cdpPort: port,
+    });
   } catch (error) {
     console.error('[MFA] Erro ao iniciar sessão:', error.message);
     return res.status(500).json({ ok: false, error: error.message });
@@ -894,23 +1006,27 @@ app.get('/mfa-view/:id', async (req, res) => {
     `);
   }
 
-  // Busca a URL do DevTools via API do Chrome
   let devtoolsUrl = '';
+
   try {
     const targets = await new Promise((resolve, reject) => {
       http.get(`http://localhost:${session.port}/json`, (r) => {
         let data = '';
         r.on('data', (d) => (data += d));
         r.on('end', () => {
-          try { resolve(JSON.parse(data)); }
-          catch { reject(new Error('JSON inválido')); }
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            reject(new Error('JSON inválido'));
+          }
         });
       }).on('error', reject);
     });
 
     const pageTarget = targets.find((t) => t.type === 'page');
+
     if (pageTarget) {
-      const host = req.get('host').split(':')[0]; // só o hostname
+      const host = req.get('host').split(':')[0];
       devtoolsUrl = pageTarget.devtoolsFrontendUrl
         .replace(/ws=localhost/g, `ws=${host}`)
         .replace(/localhost/g, host);
@@ -1102,9 +1218,11 @@ app.get('/mfa-view/:id', async (req, res) => {
       const btn = document.getElementById('captureBtn');
       btn.disabled = true;
       setStatus('Capturando sessão...', 'loading');
+
       try {
         const res = await fetch('/mfa-capture/' + sessionId, { method: 'POST' });
         const data = await res.json();
+
         if (data.ok) {
           setStatus('✓ Sessão salva! Redirecionando...', 'success');
           setTimeout(() => { window.location.href = '/'; }, 1800);
@@ -1166,9 +1284,11 @@ app.post('/mfa-capture/:id', async (req, res) => {
 app.post('/mfa-cancel/:id', async (req, res) => {
   const session = activeMfaSessions.get(req.params.id);
   if (!session) return res.json({ ok: true, message: 'Sessão já encerrada' });
+
   await session.browser.close().catch(() => {});
   activeMfaSessions.delete(req.params.id);
   console.log(`[MFA] Sessão ${req.params.id} cancelada`);
+
   return res.json({ ok: true });
 });
 
@@ -1180,6 +1300,7 @@ app.get('/mfa-status', (_req, res) => {
     cdpPort: s.port,
     viewUrl: `/mfa-view/${id}`,
   }));
+
   return res.json({
     ok: true,
     activeSessions: sessions.length,
