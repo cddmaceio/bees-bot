@@ -25,9 +25,9 @@ EXPOSE 3000
 EXPOSE 6080
 
 CMD ["sh", "-c", "\
-  Xvfb :99 -screen 0 1280x900x24 & \
-  sleep 1 && \
-  x11vnc -display :99 -nopw -listen 0.0.0.0 -xkb -forever -shared & \
+  Xvfb :99 -screen 0 1280x900x24 -ac +extension GLX +render -noreset & \
+  sleep 2 && \
+  x11vnc -display :99 -nopw -listen 0.0.0.0 -xkb -forever -shared -bg -o /var/log/x11vnc.log && \
   sleep 1 && \
   websockify --web /usr/share/novnc 6080 localhost:5900 & \
   sleep 1 && \
