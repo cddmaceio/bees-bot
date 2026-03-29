@@ -64,6 +64,56 @@ function getPngFilesSorted() {
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
+function getManagedFilesSorted() {
+  if (!fs.existsSync(DOWNLOAD_DIR)) return [];
+
+  return fs
+    .readdirSync(DOWNLOAD_DIR)
+    .filter((file) => {
+      const lower = file.toLowerCase();
+      return lower.endsWith('.csv') || lower.endsWith('.png');
+    })
+    .map((file) => {
+      const fullPath = path.join(DOWNLOAD_DIR, file);
+      const stats = fs.statSync(fullPath);
+
+      return {
+        name: file,
+        fullPath,
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
+      };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function deleteManagedFiles() {
+  const files = getManagedFilesSorted();
+  let deleted = 0;
+  const deletedFiles = [];
+  const failedFiles = [];
+
+  for (const file of files) {
+    try {
+      fs.unlinkSync(file.fullPath);
+      deleted += 1;
+      deletedFiles.push(file.name);
+    } catch (error) {
+      failedFiles.push({
+        name: file.name,
+        error: error.message,
+      });
+    }
+  }
+
+  return {
+    totalFound: files.length,
+    deleted,
+    deletedFiles,
+    failedFiles,
+  };
+}
+
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes)) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
@@ -370,12 +420,21 @@ function renderHomePage() {
           border-radius: 8px;
           margin: 6px 8px 0 0;
           font-size: 14px;
+          border: none;
+          cursor: pointer;
         }
         .btn.secondary {
           background: #374151;
         }
         .btn.light {
           background: #2563eb;
+        }
+        .btn.danger {
+          background: #dc2626;
+        }
+        .btn:disabled {
+          opacity: 0.7;
+          cursor: not-allowed;
         }
         table {
           width: 100%;
@@ -405,6 +464,16 @@ function renderHomePage() {
           padding: 2px 5px;
           border-radius: 6px;
         }
+        .status-box {
+          margin-top: 14px;
+          padding: 12px;
+          border-radius: 10px;
+          background: #f3f4f6;
+          white-space: pre-wrap;
+          font-size: 13px;
+          line-height: 1.5;
+          display: none;
+        }
       </style>
     </head>
     <body>
@@ -421,10 +490,18 @@ function renderHomePage() {
         <div class="grid">
           <div class="card">
             <h2>Ações rápidas</h2>
-            <a class="btn" href="/health" target="_blank">Health</a>
-            <a class="btn secondary" href="/auth-status" target="_blank">Auth Status</a>
-            <a class="btn light" href="/files" target="_blank">CSVs (JSON)</a>
-            <a class="btn light" href="/files-all" target="_blank">Todos arquivos (JSON)</a>
+
+            <button class="btn light" id="runNowBtn">Executar agora</button>
+            <button class="btn danger" id="deleteFilesBtn">Apagar arquivos/screenshots</button>
+
+            <div style="margin-top: 12px;">
+              <a class="btn" href="/health" target="_blank">Health</a>
+              <a class="btn secondary" href="/auth-status" target="_blank">Auth Status</a>
+              <a class="btn light" href="/files" target="_blank">CSVs (JSON)</a>
+              <a class="btn light" href="/files-all" target="_blank">Todos arquivos (JSON)</a>
+            </div>
+
+            <div id="statusBox" class="status-box"></div>
           </div>
 
           <div class="card">
@@ -493,6 +570,83 @@ function renderHomePage() {
           }
         </div>
       </div>
+
+      <script>
+        const runNowBtn = document.getElementById('runNowBtn');
+        const deleteFilesBtn = document.getElementById('deleteFilesBtn');
+        const statusBox = document.getElementById('statusBox');
+
+        function showStatus(content) {
+          statusBox.style.display = 'block';
+          statusBox.textContent = typeof content === 'string'
+            ? content
+            : JSON.stringify(content, null, 2);
+        }
+
+        runNowBtn.addEventListener('click', async () => {
+          runNowBtn.disabled = true;
+          deleteFilesBtn.disabled = true;
+          showStatus('Executando fluxo...');
+
+          try {
+            const response = await fetch('/run', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({})
+            });
+
+            const data = await response.json();
+            showStatus(data);
+
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          } catch (error) {
+            showStatus({
+              success: false,
+              error: error.message || 'RUN_REQUEST_FAILED'
+            });
+          } finally {
+            runNowBtn.disabled = false;
+            deleteFilesBtn.disabled = false;
+          }
+        });
+
+        deleteFilesBtn.addEventListener('click', async () => {
+          const confirmed = window.confirm('Tem certeza que deseja apagar todos os CSVs e screenshots?');
+          if (!confirmed) return;
+
+          runNowBtn.disabled = true;
+          deleteFilesBtn.disabled = true;
+          showStatus('Apagando arquivos...');
+
+          try {
+            const response = await fetch('/delete-files', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            });
+
+            const data = await response.json();
+            showStatus(data);
+
+            setTimeout(() => {
+              window.location.reload();
+            }, 1200);
+          } catch (error) {
+            showStatus({
+              success: false,
+              error: error.message || 'DELETE_REQUEST_FAILED'
+            });
+          } finally {
+            runNowBtn.disabled = false;
+            deleteFilesBtn.disabled = false;
+          }
+        });
+      </script>
     </body>
   </html>
   `;
@@ -613,7 +767,7 @@ app.post('/run', async (req, res) => {
 
     if (!onIndicatorsPage) {
       const failShot = await saveDebugScreenshot(page, 'indicators-page-not-found');
-      throw new Error(`INDICATORS_PAGE_NOT_FOUND | url=${page.url()} | screenshot=${failShot || 'N/A'}`);
+      throw new Error(\`INDICATORS_PAGE_NOT_FOUND | url=\${page.url()} | screenshot=\${failShot || 'N/A'}\`);
     }
 
     const section = await findIndicatorsSection(page);
@@ -621,7 +775,7 @@ app.post('/run', async (req, res) => {
 
     if (!usedDateSelector) {
       const failShot = await saveDebugScreenshot(page, 'date-input-not-found');
-      throw new Error(`DATE_INPUT_NOT_FOUND | url=${page.url()} | screenshot=${failShot || 'N/A'}`);
+      throw new Error(\`DATE_INPUT_NOT_FOUND | url=\${page.url()} | screenshot=\${failShot || 'N/A'}\`);
     }
 
     await sleep(1200);
@@ -630,7 +784,7 @@ app.post('/run', async (req, res) => {
 
     if (!downloadResult) {
       const failShot = await saveDebugScreenshot(page, 'download-button-not-found');
-      throw new Error(`DOWNLOAD_BUTTON_NOT_FOUND | url=${page.url()} | screenshot=${failShot || 'N/A'}`);
+      throw new Error(\`DOWNLOAD_BUTTON_NOT_FOUND | url=\${page.url()} | screenshot=\${failShot || 'N/A'}\`);
     }
 
     const successShot = await saveDebugScreenshot(page, 'success');
@@ -656,6 +810,26 @@ app.post('/run', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || String(error),
+    });
+  }
+});
+
+app.post('/delete-files', (_req, res) => {
+  try {
+    ensureDir(DOWNLOAD_DIR);
+
+    const result = deleteManagedFiles();
+
+    return res.json({
+      success: true,
+      message: 'Arquivos removidos com sucesso',
+      ...result,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'DELETE_FILES_FAILED',
     });
   }
 });
@@ -737,7 +911,7 @@ app.get('/view-last-csv', (_req, res) => {
     }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', `inline; filename="${files[0].name}"`);
+    res.setHeader('Content-Disposition', \`inline; filename="\${files[0].name}"\`);
 
     return fs.createReadStream(files[0].fullPath).pipe(res);
   } catch (error) {
@@ -770,7 +944,7 @@ app.get('/view-debug-last', (_req, res) => {
     }
 
     res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Content-Disposition', `inline; filename="${files[0].name}"`);
+    res.setHeader('Content-Disposition', \`inline; filename="\${files[0].name}"\`);
 
     return fs.createReadStream(files[0].fullPath).pipe(res);
   } catch (error) {
@@ -781,5 +955,5 @@ app.get('/view-debug-last', (_req, res) => {
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-  console.log(`bees-bot running on port ${port}`);
+  console.log(\`bees-bot running on port \${port}\`);
 });
