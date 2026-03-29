@@ -64,6 +64,14 @@ function getPngFilesSorted() {
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 function formatDateBR(input) {
   if (!input) {
     const d = new Date();
@@ -73,13 +81,11 @@ function formatDateBR(input) {
     return `${dd}/${mm}/${yyyy}`;
   }
 
-  // aceita yyyy-mm-dd
   if (/^\d{4}-\d{2}-\d{2}$/.test(input)) {
     const [yyyy, mm, dd] = input.split('-');
     return `${dd}/${mm}/${yyyy}`;
   }
 
-  // aceita dd/mm/yyyy
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(input)) {
     return input;
   }
@@ -222,13 +228,11 @@ async function setDateField(section, dateBr) {
       await input.scrollIntoViewIfNeeded().catch(() => {});
       await input.click({ timeout: 3000 }).catch(() => {});
 
-      // tentativa 1
       const filled = await input.fill(dateBr, { timeout: 3000 })
         .then(() => true)
         .catch(() => false);
 
       if (!filled) {
-        // tentativa 2
         await input.press('Control+A').catch(() => {});
         await input.press('Meta+A').catch(() => {});
         await input.type(dateBr, { delay: 80 }).catch(() => {});
@@ -290,6 +294,220 @@ async function clickDownload(page, section, fileDate) {
 
   return null;
 }
+
+function renderHomePage() {
+  const csvFiles = getCsvFilesSorted();
+  const pngFiles = getPngFilesSorted();
+
+  const lastCsv = csvFiles[0] || null;
+  const lastPng = pngFiles[0] || null;
+
+  const csvListHtml = csvFiles.length
+    ? csvFiles.slice(0, 10).map((file) => `
+        <tr>
+          <td>${file.name}</td>
+          <td>${formatBytes(file.size)}</td>
+          <td>${new Date(file.mtimeMs).toLocaleString('pt-BR')}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="3">Nenhum CSV encontrado</td></tr>';
+
+  const pngListHtml = pngFiles.length
+    ? pngFiles.slice(0, 10).map((file) => `
+        <tr>
+          <td>${file.name}</td>
+          <td>${formatBytes(file.size)}</td>
+          <td>${new Date(file.mtimeMs).toLocaleString('pt-BR')}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="3">Nenhuma screenshot encontrada</td></tr>';
+
+  return `
+  <!doctype html>
+  <html lang="pt-BR">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>BEES Bot</title>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background: #f5f7fb;
+          color: #1f2937;
+          margin: 0;
+          padding: 24px;
+        }
+        .container {
+          max-width: 1100px;
+          margin: 0 auto;
+        }
+        .header {
+          margin-bottom: 20px;
+        }
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+          gap: 16px;
+          margin-bottom: 20px;
+        }
+        .card {
+          background: #fff;
+          border: 1px solid #e5e7eb;
+          border-radius: 12px;
+          padding: 18px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        }
+        .card h2 {
+          margin: 0 0 12px 0;
+          font-size: 18px;
+        }
+        .btn {
+          display: inline-block;
+          text-decoration: none;
+          background: #111827;
+          color: white;
+          padding: 10px 14px;
+          border-radius: 8px;
+          margin: 6px 8px 0 0;
+          font-size: 14px;
+        }
+        .btn.secondary {
+          background: #374151;
+        }
+        .btn.light {
+          background: #2563eb;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 10px;
+          font-size: 14px;
+        }
+        th, td {
+          text-align: left;
+          border-bottom: 1px solid #e5e7eb;
+          padding: 10px 8px;
+        }
+        .meta {
+          font-size: 14px;
+          line-height: 1.6;
+        }
+        .preview {
+          width: 100%;
+          max-height: 600px;
+          object-fit: contain;
+          border: 1px solid #e5e7eb;
+          border-radius: 8px;
+          background: white;
+        }
+        code {
+          background: #f3f4f6;
+          padding: 2px 5px;
+          border-radius: 6px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>BEES Bot</h1>
+          <div class="meta">
+            <div><strong>Download dir:</strong> <code>${DOWNLOAD_DIR}</code></div>
+            <div><strong>Sessão MFA:</strong> ${fs.existsSync(SESSION_FILE) ? 'OK' : 'AUSENTE'}</div>
+            <div><strong>Agora:</strong> ${new Date().toLocaleString('pt-BR')}</div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h2>Ações rápidas</h2>
+            <a class="btn" href="/health" target="_blank">Health</a>
+            <a class="btn secondary" href="/auth-status" target="_blank">Auth Status</a>
+            <a class="btn light" href="/files" target="_blank">CSVs (JSON)</a>
+            <a class="btn light" href="/files-all" target="_blank">Todos arquivos (JSON)</a>
+          </div>
+
+          <div class="card">
+            <h2>Último CSV</h2>
+            <div class="meta">
+              <div><strong>Arquivo:</strong> ${lastCsv ? lastCsv.name : 'Nenhum'}</div>
+              <div><strong>Tamanho:</strong> ${lastCsv ? formatBytes(lastCsv.size) : '-'}</div>
+              <div><strong>Modificado:</strong> ${lastCsv ? new Date(lastCsv.mtimeMs).toLocaleString('pt-BR') : '-'}</div>
+            </div>
+            <a class="btn" href="/download-last" target="_blank">Baixar último CSV</a>
+            <a class="btn secondary" href="/view-last-csv" target="_blank">Abrir CSV no navegador</a>
+          </div>
+
+          <div class="card">
+            <h2>Última screenshot</h2>
+            <div class="meta">
+              <div><strong>Arquivo:</strong> ${lastPng ? lastPng.name : 'Nenhuma'}</div>
+              <div><strong>Tamanho:</strong> ${lastPng ? formatBytes(lastPng.size) : '-'}</div>
+              <div><strong>Modificado:</strong> ${lastPng ? new Date(lastPng.mtimeMs).toLocaleString('pt-BR') : '-'}</div>
+            </div>
+            <a class="btn" href="/download-debug-last" target="_blank">Baixar screenshot</a>
+            <a class="btn secondary" href="/view-debug-last" target="_blank">Abrir screenshot</a>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h2>Últimos CSVs</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Tamanho</th>
+                  <th>Data</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${csvListHtml}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <h2>Últimas screenshots</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Tamanho</th>
+                  <th>Data</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${pngListHtml}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Preview da última screenshot</h2>
+          ${
+            lastPng
+              ? `<img class="preview" src="/view-debug-last" alt="Última screenshot" />`
+              : '<div class="meta">Nenhuma screenshot encontrada.</div>'
+          }
+        </div>
+      </div>
+    </body>
+  </html>
+  `;
+}
+
+app.get('/', (_req, res) => {
+  try {
+    ensureDir(DOWNLOAD_DIR);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(renderHomePage());
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send('Erro ao renderizar dashboard');
+  }
+});
 
 app.get('/health', (_req, res) => {
   res.json({
@@ -354,10 +572,8 @@ app.post('/run', async (req, res) => {
 
     const page = await context.newPage();
 
-    // 1) abre control tower direto
     await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower Inicial');
 
-    // 2) se sessão expirou, devolve AUTH_REQUIRED
     if (await detectLoginPage(page)) {
       const loginShot = await saveDebugScreenshot(page, 'auth-required');
 
@@ -372,10 +588,8 @@ app.post('/run', async (req, res) => {
       });
     }
 
-    // 3) tenta reconhecer a página final
     let onIndicatorsPage = await waitForIndicatorsPage(page);
 
-    // 4) fallback: routes -> control-tower
     if (!onIndicatorsPage) {
       await gotoWithWait(page, URL_ROUTES, 'Routes');
 
@@ -402,7 +616,6 @@ app.post('/run', async (req, res) => {
       throw new Error(`INDICATORS_PAGE_NOT_FOUND | url=${page.url()} | screenshot=${failShot || 'N/A'}`);
     }
 
-    // 5) preenche data
     const section = await findIndicatorsSection(page);
     const usedDateSelector = await setDateField(section, dateBr);
 
@@ -413,7 +626,6 @@ app.post('/run', async (req, res) => {
 
     await sleep(1200);
 
-    // 6) download
     const downloadResult = await clickDownload(page, section, fileDate);
 
     if (!downloadResult) {
@@ -468,6 +680,39 @@ app.get('/files', (_req, res) => {
   }
 });
 
+app.get('/files-all', (_req, res) => {
+  try {
+    const csvFiles = getCsvFilesSorted().map((file) => ({
+      type: 'csv',
+      name: file.name,
+      size: file.size,
+      modifiedAt: new Date(file.mtimeMs).toISOString(),
+      path: file.fullPath,
+    }));
+
+    const pngFiles = getPngFilesSorted().map((file) => ({
+      type: 'png',
+      name: file.name,
+      size: file.size,
+      modifiedAt: new Date(file.mtimeMs).toISOString(),
+      path: file.fullPath,
+    }));
+
+    const files = [...csvFiles, ...pngFiles].sort(
+      (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
+    );
+
+    return res.json({
+      ok: true,
+      total: files.length,
+      files,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/download-last', (_req, res) => {
   try {
     const files = getCsvFilesSorted();
@@ -483,6 +728,24 @@ app.get('/download-last', (_req, res) => {
   }
 });
 
+app.get('/view-last-csv', (_req, res) => {
+  try {
+    const files = getCsvFilesSorted();
+
+    if (files.length === 0) {
+      return res.status(404).send('Nenhum CSV encontrado');
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `inline; filename="${files[0].name}"`);
+
+    return fs.createReadStream(files[0].fullPath).pipe(res);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send('Erro ao abrir CSV');
+  }
+});
+
 app.get('/download-debug-last', (_req, res) => {
   try {
     const files = getPngFilesSorted();
@@ -495,6 +758,24 @@ app.get('/download-debug-last', (_req, res) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'DOWNLOAD_DEBUG_FAILED' });
+  }
+});
+
+app.get('/view-debug-last', (_req, res) => {
+  try {
+    const files = getPngFilesSorted();
+
+    if (files.length === 0) {
+      return res.status(404).send('Nenhuma screenshot encontrada');
+    }
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Disposition', `inline; filename="${files[0].name}"`);
+
+    return fs.createReadStream(files[0].fullPath).pipe(res);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send('Erro ao abrir screenshot');
   }
 });
 
