@@ -512,7 +512,7 @@ function renderHomePage() {
             : `<button class="btn success" id="mfaStartBtn" onclick="iniciarMfa()">🔐 Iniciar Login MFA</button>`
           }
           ${sessionExists
-            ? `<button class="btn danger" id="deleteSessionBtn" onclick="apagarSessao()">🗑️ Apagar sessão (teste)</button>`
+            ? '<button class="btn danger" id="deleteSessionBtn" onclick="apagarSessao()">Apagar sessão (teste)</button>'
             : ''
           }
 
@@ -668,7 +668,7 @@ function renderHomePage() {
         }
 
         async function apagarSessao() {
-          if (!confirm('Apagar o storageState (sessão MFA)?\n\nO bot precisará fazer login novamente.')) return;
+          if (!confirm('Apagar o storageState (sessão MFA)? O bot precisará fazer login novamente.')) return;
           const btn = document.getElementById('deleteSessionBtn');
           if (btn) btn.disabled = true;
           showStatus(mfaStatusBox, 'Apagando sessão...');
