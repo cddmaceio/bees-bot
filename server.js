@@ -211,7 +211,6 @@ const BEES_EMAIL    = process.env.BEES_EMAIL    || '';
 const BEES_PASSWORD = process.env.BEES_PASSWORD || '';
 
 async function fillVisibleInput(page, selectors, value, label) {
-  // Aguarda até 10s para algum input aparecer
   for (let attempt = 0; attempt < 20; attempt++) {
     for (const sel of selectors) {
       try {
@@ -257,8 +256,7 @@ async function autoLogin(page, context) {
     console.log('[AUTO_LOGIN] Iniciando login automático para:', BEES_EMAIL);
     await saveDebugScreenshot(page, 'autologin-step1-before-email');
 
-    // ── ETAPA 1: Preencher e-mail ────────────────────────────
-    // O portal BEES usa input customizado — tenta vários seletores
+    // ── ETAPA 1: E-mail ──────────────────────────────────────
     const emailSelectors = [
       'input[name="email"]',
       'input[id="email"]',
@@ -268,19 +266,18 @@ async function autoLogin(page, context) {
       'input[placeholder*="email" i]',
       'input[autocomplete="email"]',
       'input[autocomplete="username"]',
-      'input',   // fallback: primeiro input visível da página
+      'input',
     ];
 
     const emailFilled = await fillVisibleInput(page, emailSelectors, BEES_EMAIL, 'E-mail');
     if (!emailFilled) {
-      console.warn('[AUTO_LOGIN] Não foi possível encontrar campo de e-mail.');
+      console.warn('[AUTO_LOGIN] Campo de e-mail não encontrado.');
       await saveDebugScreenshot(page, 'autologin-email-not-found');
       return false;
     }
 
     await sleep(400);
 
-    // Clica em "Continuar" (botão da tela de e-mail)
     const continueSelectors = [
       'button:has-text("Continuar")',
       'button:has-text("Continue")',
@@ -297,13 +294,12 @@ async function autoLogin(page, context) {
       return false;
     }
 
-    // Aguarda transição para tela de senha
+    // ── ETAPA 2: Senha ───────────────────────────────────────
     console.log('[AUTO_LOGIN] Aguardando tela de senha...');
     await page.waitForLoadState('networkidle').catch(() => {});
     await sleep(2500);
     await saveDebugScreenshot(page, 'autologin-step2-before-password');
 
-    // ── ETAPA 2: Preencher senha ─────────────────────────────
     const passwordSelectors = [
       'input[type="password"]',
       'input[name="password"]',
@@ -316,7 +312,6 @@ async function autoLogin(page, context) {
 
     const passwordFilled = await fillVisibleInput(page, passwordSelectors, BEES_PASSWORD, 'Senha');
     if (!passwordFilled) {
-      // Verifica se é MFA
       const bodyText = await page.locator('body').innerText().catch(() => '');
       const isMfa =
         bodyText.toLowerCase().includes('código') ||
@@ -327,18 +322,16 @@ async function autoLogin(page, context) {
         bodyText.toLowerCase().includes('otp') ||
         bodyText.toLowerCase().includes('mfa');
 
-      if (isMfa) {
-        console.warn('[AUTO_LOGIN] MFA detectado — não é possível completar sem interação humana.');
-      } else {
-        console.warn('[AUTO_LOGIN] Campo de senha não encontrado. URL:', page.url());
-      }
+      console.warn(isMfa
+        ? '[AUTO_LOGIN] MFA detectado — necessário login manual.'
+        : `[AUTO_LOGIN] Campo de senha não encontrado. URL: ${page.url()}`
+      );
       await saveDebugScreenshot(page, 'autologin-password-not-found');
       return false;
     }
 
     await sleep(400);
 
-    // Clica em "Continuar" (botão da tela de senha)
     const clicked2 = await clickVisibleButton(page, continueSelectors, 'Continuar (senha)');
     if (!clicked2) {
       console.warn('[AUTO_LOGIN] Botão Continuar (senha) não encontrado.');
@@ -346,7 +339,7 @@ async function autoLogin(page, context) {
       return false;
     }
 
-    // Aguarda redirecionamento para o portal
+    // ── ETAPA 3: Pós-login ───────────────────────────────────
     console.log('[AUTO_LOGIN] Aguardando redirecionamento para o portal...');
     await page.waitForLoadState('networkidle').catch(() => {});
     await sleep(4000);
@@ -373,30 +366,19 @@ async function autoLogin(page, context) {
       } catch (_) {}
     }
 
-    // Verifica se o login funcionou (não deve mais estar na tela de login)
-    const currentUrl = page.url();
     const stillOnLogin = await detectLoginPage(page);
-
     if (stillOnLogin) {
-      const bodyText = await page.locator('body').innerText().catch(() => '');
-      const hasError =
-        bodyText.toLowerCase().includes('incorreta') ||
-        bodyText.toLowerCase().includes('inválida') ||
-        bodyText.toLowerCase().includes('invalid') ||
-        bodyText.toLowerCase().includes('incorrect') ||
-        bodyText.toLowerCase().includes('erro');
-
-      console.warn('[AUTO_LOGIN] Ainda na tela de login após submit.', hasError ? 'Possível senha incorreta.' : '', 'URL:', currentUrl);
+      console.warn('[AUTO_LOGIN] Ainda na tela de login após submit. Credenciais incorretas ou fluxo inesperado. URL:', page.url());
       await saveDebugScreenshot(page, 'autologin-still-on-login');
       return false;
     }
 
-    // Salva a sessão renovada
+    // Salva sessão renovada
     const storageState = await context.storageState();
     if (storageState?.cookies?.length) {
       ensureDir(path.dirname(SESSION_FILE));
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2), 'utf8');
-      console.log(`[AUTO_LOGIN] ✅ Sessão salva com sucesso! ${storageState.cookies.length} cookies. URL: ${currentUrl}`);
+      console.log(`[AUTO_LOGIN] ✅ Sessão salva! ${storageState.cookies.length} cookies. URL: ${page.url()}`);
     }
 
     return true;
@@ -950,18 +932,16 @@ app.post('/run', async (req, res) => {
         await context.close().catch(() => {});
         await browser.close().catch(() => {});
 
-        const hasCreds = !!(BEES_EMAIL && BEES_PASSWORD);
         return res.status(401).json({
           success: false,
-          error: hasCreds
-            ? 'AUTH_REQUIRED — auto-login falhou (verifique screenshots de debug ou se há MFA)'
-            : 'AUTH_REQUIRED — configure BEES_EMAIL e BEES_PASSWORD no EasyPanel',
+          error: (BEES_EMAIL && BEES_PASSWORD)
+            ? 'AUTH_REQUIRED — auto-login falhou. Verifique screenshots de debug ou se há MFA pendente.'
+            : 'AUTH_REQUIRED — configure BEES_EMAIL e BEES_PASSWORD no EasyPanel.',
           currentUrl: page.url(),
           screenshot: loginShot,
         });
       }
 
-      // Navega para o portal após login bem-sucedido
       await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower após auto-login');
     }
 
@@ -981,13 +961,13 @@ app.post('/run', async (req, res) => {
 
           return res.status(401).json({
             success: false,
-            error: 'AUTH_REQUIRED — auto-login falhou na segunda tentativa',
+            error: 'AUTH_REQUIRED — auto-login falhou na segunda tentativa.',
             currentUrl: page.url(),
             screenshot: loginShot,
           });
         }
 
-        await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower após auto-login (2ª tentativa)');
+        await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower após auto-login (2ª vez)');
       }
 
       await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower Final');
