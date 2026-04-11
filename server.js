@@ -210,6 +210,43 @@ async function detectLoginPage(page) {
 const BEES_EMAIL    = process.env.BEES_EMAIL    || '';
 const BEES_PASSWORD = process.env.BEES_PASSWORD || '';
 
+async function fillVisibleInput(page, selectors, value, label) {
+  // Aguarda até 10s para algum input aparecer
+  for (let attempt = 0; attempt < 20; attempt++) {
+    for (const sel of selectors) {
+      try {
+        const el = page.locator(sel).first();
+        if (!await el.count()) continue;
+        if (!await el.isVisible().catch(() => false)) continue;
+        await el.scrollIntoViewIfNeeded().catch(() => {});
+        await el.click({ timeout: 3000 }).catch(() => {});
+        await el.fill('', { timeout: 2000 }).catch(() => {});
+        await el.fill(value, { timeout: 3000 });
+        console.log(`[AUTO_LOGIN] ${label} preenchido com seletor: ${sel}`);
+        return sel;
+      } catch (_) {}
+    }
+    await sleep(500);
+  }
+  return null;
+}
+
+async function clickVisibleButton(page, selectors, label) {
+  for (const sel of selectors) {
+    try {
+      const el = page.locator(sel).first();
+      if (!await el.count()) continue;
+      if (!await el.isVisible().catch(() => false)) continue;
+      if (!await el.isEnabled().catch(() => false)) continue;
+      await el.scrollIntoViewIfNeeded().catch(() => {});
+      await el.click({ timeout: 5000 });
+      console.log(`[AUTO_LOGIN] Botão "${label}" clicado com seletor: ${sel}`);
+      return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 async function autoLogin(page, context) {
   if (!BEES_EMAIL || !BEES_PASSWORD) {
     console.warn('[AUTO_LOGIN] BEES_EMAIL ou BEES_PASSWORD não configurados. Pulando auto-login.');
@@ -217,156 +254,155 @@ async function autoLogin(page, context) {
   }
 
   try {
-    console.log('[AUTO_LOGIN] Tentando login automático com', BEES_EMAIL);
+    console.log('[AUTO_LOGIN] Iniciando login automático para:', BEES_EMAIL);
+    await saveDebugScreenshot(page, 'autologin-step1-before-email');
 
-    // Aguarda campo de e-mail (Azure B2C)
+    // ── ETAPA 1: Preencher e-mail ────────────────────────────
+    // O portal BEES usa input customizado — tenta vários seletores
     const emailSelectors = [
-      'input[type="email"]',
-      'input[name="loginfmt"]',
+      'input[name="email"]',
       'input[id="email"]',
+      'input[type="email"]',
+      'input[type="text"]',
+      'input[placeholder*="e-mail" i]',
       'input[placeholder*="email" i]',
+      'input[autocomplete="email"]',
+      'input[autocomplete="username"]',
+      'input',   // fallback: primeiro input visível da página
     ];
 
-    let emailInput = null;
-    for (const sel of emailSelectors) {
-      try {
-        const el = page.locator(sel).first();
-        if (await el.count() && await el.isVisible()) { emailInput = el; break; }
-      } catch (_) {}
-    }
-
-    if (!emailInput) {
-      console.warn('[AUTO_LOGIN] Campo de e-mail não encontrado.');
+    const emailFilled = await fillVisibleInput(page, emailSelectors, BEES_EMAIL, 'E-mail');
+    if (!emailFilled) {
+      console.warn('[AUTO_LOGIN] Não foi possível encontrar campo de e-mail.');
+      await saveDebugScreenshot(page, 'autologin-email-not-found');
       return false;
     }
 
-    await emailInput.fill(BEES_EMAIL);
-    await sleep(500);
+    await sleep(400);
 
-    // Clica em "Próximo" / "Next" / "Entrar" após o e-mail
-    const nextSelectors = [
-      'input[type="submit"]',
+    // Clica em "Continuar" (botão da tela de e-mail)
+    const continueSelectors = [
+      'button:has-text("Continuar")',
+      'button:has-text("Continue")',
       'button[type="submit"]',
+      'input[type="submit"]',
       'button:has-text("Próximo")',
       'button:has-text("Next")',
-      'button:has-text("Avançar")',
-      '#idSIButton9',
     ];
-    for (const sel of nextSelectors) {
-      try {
-        const el = page.locator(sel).first();
-        if (await el.count() && await el.isVisible()) {
-          await el.click();
-          break;
-        }
-      } catch (_) {}
+
+    const clicked1 = await clickVisibleButton(page, continueSelectors, 'Continuar (e-mail)');
+    if (!clicked1) {
+      console.warn('[AUTO_LOGIN] Botão Continuar (e-mail) não encontrado.');
+      await saveDebugScreenshot(page, 'autologin-btn1-not-found');
+      return false;
     }
 
+    // Aguarda transição para tela de senha
+    console.log('[AUTO_LOGIN] Aguardando tela de senha...');
     await page.waitForLoadState('networkidle').catch(() => {});
-    await sleep(2000);
+    await sleep(2500);
+    await saveDebugScreenshot(page, 'autologin-step2-before-password');
 
-    // Aguarda campo de senha
+    // ── ETAPA 2: Preencher senha ─────────────────────────────
     const passwordSelectors = [
       'input[type="password"]',
-      'input[name="passwd"]',
+      'input[name="password"]',
       'input[id="password"]',
+      'input[name="passwd"]',
+      'input[autocomplete="current-password"]',
       'input[placeholder*="senha" i]',
       'input[placeholder*="password" i]',
     ];
 
-    let passwordInput = null;
-    for (const sel of passwordSelectors) {
-      try {
-        const el = page.locator(sel).first();
-        if (await el.count() && await el.isVisible()) { passwordInput = el; break; }
-      } catch (_) {}
-    }
-
-    if (!passwordInput) {
-      console.warn('[AUTO_LOGIN] Campo de senha não encontrado após e-mail.');
-      return false;
-    }
-
-    await passwordInput.fill(BEES_PASSWORD);
-    await sleep(500);
-
-    // Clica em "Entrar" / "Sign in"
-    const submitSelectors = [
-      'input[type="submit"]',
-      'button[type="submit"]',
-      'button:has-text("Entrar")',
-      'button:has-text("Sign in")',
-      '#idSIButton9',
-    ];
-    for (const sel of submitSelectors) {
-      try {
-        const el = page.locator(sel).first();
-        if (await el.count() && await el.isVisible()) {
-          await el.click();
-          break;
-        }
-      } catch (_) {}
-    }
-
-    await page.waitForLoadState('networkidle').catch(() => {});
-    await sleep(3000);
-
-    // "Permanecer conectado?" — clica em Sim/Yes se aparecer
-    const stayConnectedSelectors = [
-      'button:has-text("Sim")',
-      'button:has-text("Yes")',
-      '#idSIButton9',
-      'input[value="Yes"]',
-      'input[value="Sim"]',
-    ];
-    for (const sel of stayConnectedSelectors) {
-      try {
-        const el = page.locator(sel).first();
-        if (await el.count() && await el.isVisible()) {
-          await el.click();
-          break;
-        }
-      } catch (_) {}
-    }
-
-    await page.waitForLoadState('networkidle').catch(() => {});
-    await sleep(3000);
-
-    // Verifica se ainda está na tela de login (pode precisar de MFA manual)
-    const stillOnLogin = await detectLoginPage(page);
-    if (stillOnLogin) {
-      // Verifica se é tela de MFA/OTP
-      const currentUrl = page.url();
+    const passwordFilled = await fillVisibleInput(page, passwordSelectors, BEES_PASSWORD, 'Senha');
+    if (!passwordFilled) {
+      // Verifica se é MFA
       const bodyText = await page.locator('body').innerText().catch(() => '');
       const isMfa =
-        currentUrl.includes('mfa') ||
         bodyText.toLowerCase().includes('código') ||
         bodyText.toLowerCase().includes('verificação') ||
         bodyText.toLowerCase().includes('autenticador') ||
         bodyText.toLowerCase().includes('authenticator') ||
         bodyText.toLowerCase().includes('one-time') ||
-        bodyText.toLowerCase().includes('otp');
+        bodyText.toLowerCase().includes('otp') ||
+        bodyText.toLowerCase().includes('mfa');
 
       if (isMfa) {
         console.warn('[AUTO_LOGIN] MFA detectado — não é possível completar sem interação humana.');
       } else {
-        console.warn('[AUTO_LOGIN] Ainda na tela de login após tentativa. Credenciais incorretas ou fluxo diferente.');
+        console.warn('[AUTO_LOGIN] Campo de senha não encontrado. URL:', page.url());
       }
+      await saveDebugScreenshot(page, 'autologin-password-not-found');
       return false;
     }
 
-    // Salva a sessão após login bem-sucedido
+    await sleep(400);
+
+    // Clica em "Continuar" (botão da tela de senha)
+    const clicked2 = await clickVisibleButton(page, continueSelectors, 'Continuar (senha)');
+    if (!clicked2) {
+      console.warn('[AUTO_LOGIN] Botão Continuar (senha) não encontrado.');
+      await saveDebugScreenshot(page, 'autologin-btn2-not-found');
+      return false;
+    }
+
+    // Aguarda redirecionamento para o portal
+    console.log('[AUTO_LOGIN] Aguardando redirecionamento para o portal...');
+    await page.waitForLoadState('networkidle').catch(() => {});
+    await sleep(4000);
+    await saveDebugScreenshot(page, 'autologin-step3-after-submit');
+
+    // "Permanecer conectado?" — aceita se aparecer
+    const staySelectors = [
+      'button:has-text("Sim")',
+      'button:has-text("Yes")',
+      'input[value="Yes"]',
+      'input[value="Sim"]',
+      '#idSIButton9',
+    ];
+    for (const sel of staySelectors) {
+      try {
+        const el = page.locator(sel).first();
+        if (await el.count() && await el.isVisible()) {
+          await el.click();
+          console.log('[AUTO_LOGIN] "Permanecer conectado?" aceito.');
+          await page.waitForLoadState('networkidle').catch(() => {});
+          await sleep(2000);
+          break;
+        }
+      } catch (_) {}
+    }
+
+    // Verifica se o login funcionou (não deve mais estar na tela de login)
+    const currentUrl = page.url();
+    const stillOnLogin = await detectLoginPage(page);
+
+    if (stillOnLogin) {
+      const bodyText = await page.locator('body').innerText().catch(() => '');
+      const hasError =
+        bodyText.toLowerCase().includes('incorreta') ||
+        bodyText.toLowerCase().includes('inválida') ||
+        bodyText.toLowerCase().includes('invalid') ||
+        bodyText.toLowerCase().includes('incorrect') ||
+        bodyText.toLowerCase().includes('erro');
+
+      console.warn('[AUTO_LOGIN] Ainda na tela de login após submit.', hasError ? 'Possível senha incorreta.' : '', 'URL:', currentUrl);
+      await saveDebugScreenshot(page, 'autologin-still-on-login');
+      return false;
+    }
+
+    // Salva a sessão renovada
     const storageState = await context.storageState();
     if (storageState?.cookies?.length) {
       ensureDir(path.dirname(SESSION_FILE));
       fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2), 'utf8');
-      console.log(`[AUTO_LOGIN] Sessão salva com sucesso: ${storageState.cookies.length} cookies`);
+      console.log(`[AUTO_LOGIN] ✅ Sessão salva com sucesso! ${storageState.cookies.length} cookies. URL: ${currentUrl}`);
     }
 
-    console.log('[AUTO_LOGIN] Login automático concluído com sucesso!');
     return true;
   } catch (error) {
-    console.error('[AUTO_LOGIN] Erro durante auto-login:', error.message);
+    console.error('[AUTO_LOGIN] Erro inesperado:', error.message);
+    await saveDebugScreenshot(page, 'autologin-error').catch(() => {});
     return false;
   }
 }
@@ -914,16 +950,18 @@ app.post('/run', async (req, res) => {
         await context.close().catch(() => {});
         await browser.close().catch(() => {});
 
-        const hasCreds = BEES_EMAIL && BEES_PASSWORD;
+        const hasCreds = !!(BEES_EMAIL && BEES_PASSWORD);
         return res.status(401).json({
           success: false,
-          error: hasCreds ? 'AUTH_REQUIRED — auto-login falhou (verifique MFA ou credenciais)' : 'AUTH_REQUIRED — configure BEES_EMAIL e BEES_PASSWORD no EasyPanel',
+          error: hasCreds
+            ? 'AUTH_REQUIRED — auto-login falhou (verifique screenshots de debug ou se há MFA)'
+            : 'AUTH_REQUIRED — configure BEES_EMAIL e BEES_PASSWORD no EasyPanel',
           currentUrl: page.url(),
           screenshot: loginShot,
         });
       }
 
-      // Recarrega a página alvo após login bem-sucedido
+      // Navega para o portal após login bem-sucedido
       await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower após auto-login');
     }
 
