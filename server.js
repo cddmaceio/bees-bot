@@ -206,189 +206,6 @@ async function detectLoginPage(page) {
   }
 }
 
-// ── Auto Login ───────────────────────────────────────────────
-const BEES_EMAIL    = process.env.BEES_EMAIL    || '';
-const BEES_PASSWORD = process.env.BEES_PASSWORD || '';
-
-async function fillVisibleInput(page, selectors, value, label) {
-  for (let attempt = 0; attempt < 20; attempt++) {
-    for (const sel of selectors) {
-      try {
-        const el = page.locator(sel).first();
-        if (!await el.count()) continue;
-        if (!await el.isVisible().catch(() => false)) continue;
-        await el.scrollIntoViewIfNeeded().catch(() => {});
-        await el.click({ timeout: 3000 }).catch(() => {});
-        await el.fill('', { timeout: 2000 }).catch(() => {});
-        await el.fill(value, { timeout: 3000 });
-        console.log(`[AUTO_LOGIN] ${label} preenchido com seletor: ${sel}`);
-        return sel;
-      } catch (_) {}
-    }
-    await sleep(500);
-  }
-  return null;
-}
-
-async function clickVisibleButton(page, selectors, label) {
-  for (const sel of selectors) {
-    try {
-      const el = page.locator(sel).first();
-      if (!await el.count()) continue;
-      if (!await el.isVisible().catch(() => false)) continue;
-      if (!await el.isEnabled().catch(() => false)) continue;
-      await el.scrollIntoViewIfNeeded().catch(() => {});
-      await el.click({ timeout: 5000 });
-      console.log(`[AUTO_LOGIN] Botão "${label}" clicado com seletor: ${sel}`);
-      return true;
-    } catch (_) {}
-  }
-  return false;
-}
-
-async function autoLogin(page, context) {
-  if (!BEES_EMAIL || !BEES_PASSWORD) {
-    console.warn('[AUTO_LOGIN] BEES_EMAIL ou BEES_PASSWORD não configurados. Pulando auto-login.');
-    return false;
-  }
-
-  try {
-    console.log('[AUTO_LOGIN] Iniciando login automático para:', BEES_EMAIL);
-    await saveDebugScreenshot(page, 'autologin-step1-before-email');
-
-    // ── ETAPA 1: E-mail ──────────────────────────────────────
-    const emailSelectors = [
-      'input[name="email"]',
-      'input[id="email"]',
-      'input[type="email"]',
-      'input[type="text"]',
-      'input[placeholder*="e-mail" i]',
-      'input[placeholder*="email" i]',
-      'input[autocomplete="email"]',
-      'input[autocomplete="username"]',
-      'input',
-    ];
-
-    const emailFilled = await fillVisibleInput(page, emailSelectors, BEES_EMAIL, 'E-mail');
-    if (!emailFilled) {
-      console.warn('[AUTO_LOGIN] Campo de e-mail não encontrado.');
-      await saveDebugScreenshot(page, 'autologin-email-not-found');
-      return false;
-    }
-
-    await sleep(400);
-
-    const continueSelectors = [
-      'button:has-text("Continuar")',
-      'button:has-text("Continue")',
-      'button[type="submit"]',
-      'input[type="submit"]',
-      'button:has-text("Próximo")',
-      'button:has-text("Next")',
-    ];
-
-    const clicked1 = await clickVisibleButton(page, continueSelectors, 'Continuar (e-mail)');
-    if (!clicked1) {
-      console.warn('[AUTO_LOGIN] Botão Continuar (e-mail) não encontrado.');
-      await saveDebugScreenshot(page, 'autologin-btn1-not-found');
-      return false;
-    }
-
-    // ── ETAPA 2: Senha ───────────────────────────────────────
-    console.log('[AUTO_LOGIN] Aguardando tela de senha...');
-    await page.waitForLoadState('networkidle').catch(() => {});
-    await sleep(2500);
-    await saveDebugScreenshot(page, 'autologin-step2-before-password');
-
-    const passwordSelectors = [
-      'input[type="password"]',
-      'input[name="password"]',
-      'input[id="password"]',
-      'input[name="passwd"]',
-      'input[autocomplete="current-password"]',
-      'input[placeholder*="senha" i]',
-      'input[placeholder*="password" i]',
-    ];
-
-    const passwordFilled = await fillVisibleInput(page, passwordSelectors, BEES_PASSWORD, 'Senha');
-    if (!passwordFilled) {
-      const bodyText = await page.locator('body').innerText().catch(() => '');
-      const isMfa =
-        bodyText.toLowerCase().includes('código') ||
-        bodyText.toLowerCase().includes('verificação') ||
-        bodyText.toLowerCase().includes('autenticador') ||
-        bodyText.toLowerCase().includes('authenticator') ||
-        bodyText.toLowerCase().includes('one-time') ||
-        bodyText.toLowerCase().includes('otp') ||
-        bodyText.toLowerCase().includes('mfa');
-
-      console.warn(isMfa
-        ? '[AUTO_LOGIN] MFA detectado — necessário login manual.'
-        : `[AUTO_LOGIN] Campo de senha não encontrado. URL: ${page.url()}`
-      );
-      await saveDebugScreenshot(page, 'autologin-password-not-found');
-      return false;
-    }
-
-    await sleep(400);
-
-    const clicked2 = await clickVisibleButton(page, continueSelectors, 'Continuar (senha)');
-    if (!clicked2) {
-      console.warn('[AUTO_LOGIN] Botão Continuar (senha) não encontrado.');
-      await saveDebugScreenshot(page, 'autologin-btn2-not-found');
-      return false;
-    }
-
-    // ── ETAPA 3: Pós-login ───────────────────────────────────
-    console.log('[AUTO_LOGIN] Aguardando redirecionamento para o portal...');
-    await page.waitForLoadState('networkidle').catch(() => {});
-    await sleep(4000);
-    await saveDebugScreenshot(page, 'autologin-step3-after-submit');
-
-    // "Permanecer conectado?" — aceita se aparecer
-    const staySelectors = [
-      'button:has-text("Sim")',
-      'button:has-text("Yes")',
-      'input[value="Yes"]',
-      'input[value="Sim"]',
-      '#idSIButton9',
-    ];
-    for (const sel of staySelectors) {
-      try {
-        const el = page.locator(sel).first();
-        if (await el.count() && await el.isVisible()) {
-          await el.click();
-          console.log('[AUTO_LOGIN] "Permanecer conectado?" aceito.');
-          await page.waitForLoadState('networkidle').catch(() => {});
-          await sleep(2000);
-          break;
-        }
-      } catch (_) {}
-    }
-
-    const stillOnLogin = await detectLoginPage(page);
-    if (stillOnLogin) {
-      console.warn('[AUTO_LOGIN] Ainda na tela de login após submit. Credenciais incorretas ou fluxo inesperado. URL:', page.url());
-      await saveDebugScreenshot(page, 'autologin-still-on-login');
-      return false;
-    }
-
-    // Salva sessão renovada
-    const storageState = await context.storageState();
-    if (storageState?.cookies?.length) {
-      ensureDir(path.dirname(SESSION_FILE));
-      fs.writeFileSync(SESSION_FILE, JSON.stringify(storageState, null, 2), 'utf8');
-      console.log(`[AUTO_LOGIN] ✅ Sessão salva! ${storageState.cookies.length} cookies. URL: ${page.url()}`);
-    }
-
-    return true;
-  } catch (error) {
-    console.error('[AUTO_LOGIN] Erro inesperado:', error.message);
-    await saveDebugScreenshot(page, 'autologin-error').catch(() => {});
-    return false;
-  }
-}
-
 async function gotoWithWait(page, url, label) {
   console.log(`Navegando para ${label}: ${url}`);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -694,6 +511,10 @@ function renderHomePage() {
                <button class="btn danger" onclick="cancelarMfa('${mfaId}')">✕ Cancelar sessão</button>`
             : `<button class="btn success" id="mfaStartBtn" onclick="iniciarMfa()">🔐 Iniciar Login MFA</button>`
           }
+          ${sessionExists
+            ? `<button class="btn danger" id="deleteSessionBtn" onclick="apagarSessao()">🗑️ Apagar sessão (teste)</button>`
+            : ''
+          }
 
           <div id="mfaStatusBox" class="status-box"></div>
         </div>
@@ -845,6 +666,22 @@ function renderHomePage() {
           await fetch('/mfa-cancel/' + id, { method: 'POST' }).catch(() => {});
           window.location.reload();
         }
+
+        async function apagarSessao() {
+          if (!confirm('Apagar o storageState (sessão MFA)?\n\nO bot precisará fazer login novamente.')) return;
+          const btn = document.getElementById('deleteSessionBtn');
+          if (btn) btn.disabled = true;
+          showStatus(mfaStatusBox, 'Apagando sessão...');
+          try {
+            const res = await fetch('/delete-session', { method: 'POST' });
+            const data = await res.json();
+            showStatus(mfaStatusBox, data.ok ? '✓ ' + data.message : 'Erro: ' + (data.error || 'Falha'));
+            setTimeout(() => window.location.reload(), 1200);
+          } catch (e) {
+            showStatus(mfaStatusBox, 'Erro: ' + e.message);
+            if (btn) btn.disabled = false;
+          }
+        }
       </script>
     </body>
   </html>
@@ -924,25 +761,16 @@ app.post('/run', async (req, res) => {
     await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower Inicial');
 
     if (await detectLoginPage(page)) {
-      console.log('[RUN] Sessão expirada. Tentando auto-login...');
-      const loginOk = await autoLogin(page, context);
+      const loginShot = await saveDebugScreenshot(page, 'auth-required');
+      await context.close().catch(() => {});
+      await browser.close().catch(() => {});
 
-      if (!loginOk) {
-        const loginShot = await saveDebugScreenshot(page, 'auth-required');
-        await context.close().catch(() => {});
-        await browser.close().catch(() => {});
-
-        return res.status(401).json({
-          success: false,
-          error: (BEES_EMAIL && BEES_PASSWORD)
-            ? 'AUTH_REQUIRED — auto-login falhou. Verifique screenshots de debug ou se há MFA pendente.'
-            : 'AUTH_REQUIRED — configure BEES_EMAIL e BEES_PASSWORD no EasyPanel.',
-          currentUrl: page.url(),
-          screenshot: loginShot,
-        });
-      }
-
-      await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower após auto-login');
+      return res.status(401).json({
+        success: false,
+        error: 'AUTH_REQUIRED',
+        currentUrl: page.url(),
+        screenshot: loginShot,
+      });
     }
 
     let onIndicatorsPage = await waitForIndicatorsPage(page);
@@ -951,23 +779,16 @@ app.post('/run', async (req, res) => {
       await gotoWithWait(page, URL_ROUTES, 'Routes');
 
       if (await detectLoginPage(page)) {
-        console.log('[RUN] Sessão expirada após Routes. Tentando auto-login...');
-        const loginOk = await autoLogin(page, context);
+        const loginShot = await saveDebugScreenshot(page, 'auth-required-after-routes');
+        await context.close().catch(() => {});
+        await browser.close().catch(() => {});
 
-        if (!loginOk) {
-          const loginShot = await saveDebugScreenshot(page, 'auth-required-after-routes');
-          await context.close().catch(() => {});
-          await browser.close().catch(() => {});
-
-          return res.status(401).json({
-            success: false,
-            error: 'AUTH_REQUIRED — auto-login falhou na segunda tentativa.',
-            currentUrl: page.url(),
-            screenshot: loginShot,
-          });
-        }
-
-        await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower após auto-login (2ª vez)');
+        return res.status(401).json({
+          success: false,
+          error: 'AUTH_REQUIRED',
+          currentUrl: page.url(),
+          screenshot: loginShot,
+        });
       }
 
       await gotoWithWait(page, URL_CONTROL_TOWER, 'Control Tower Final');
@@ -1023,6 +844,20 @@ app.post('/run', async (req, res) => {
       success: false,
       error: error.message || String(error),
     });
+  }
+});
+
+app.post('/delete-session', (_req, res) => {
+  try {
+    if (!fs.existsSync(SESSION_FILE)) {
+      return res.json({ ok: true, message: 'Sessão já estava ausente.' });
+    }
+    fs.unlinkSync(SESSION_FILE);
+    console.log('[SESSION] storageState.json removido manualmente.');
+    return res.json({ ok: true, message: 'Sessão removida com sucesso.' });
+  } catch (error) {
+    console.error('[SESSION] Erro ao remover sessão:', error.message);
+    return res.status(500).json({ ok: false, error: error.message });
   }
 });
 
